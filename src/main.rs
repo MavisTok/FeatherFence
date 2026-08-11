@@ -73,6 +73,8 @@ pub struct Global {
     pub desktop_seen: HashSet<PathBuf>,
     pub download_rx: Receiver<Vec<String>>,
     pub download_pending: HashMap<PathBuf, DownloadCandidate>,
+    /// 用户从下载收纳箱主动拖回桌面的文件；只要仍在桌面就不再次接管。
+    pub download_ignored: HashSet<PathBuf>,
     pub exiting: bool,
     /// 拖放 COM 对象,保持存活
     pub droptargets: Vec<windows::Win32::System::Ole::IDropTarget>,
@@ -553,6 +555,10 @@ pub fn sweep_desktop(g: &mut Global) {
         if !p.is_file() {
             continue;
         }
+        // 用户从下载收纳箱主动取回桌面的文件应留在原处，不再参与自动整理。
+        if g.download_ignored.contains(&p) {
+            continue;
+        }
         // 新下载优先进入下载收纳箱，不被扩展名清扫规则抢走。
         if g.download_pending.contains_key(&p) {
             continue;
@@ -579,6 +585,8 @@ fn is_download_temp(path: &Path) -> bool {
 
 fn ingest_desktop_events(g: &mut Global) {
     let Some(downloads) = downloads_dir() else { return };
+    // 文件被删除或移出桌面后释放豁免，日后同名文件仍可正常整理。
+    g.download_ignored.retain(|p| p.exists());
     while let Ok(names) = g.download_rx.try_recv() {
         for name in names {
             let path = downloads.join(name);
@@ -596,6 +604,17 @@ fn ingest_desktop_events(g: &mut Global) {
     }
     // 删除或已移动的路径不应永远占着 seen，允许日后同名下载再次被接管。
     g.desktop_seen.retain(|p| p.exists());
+}
+
+/// 拖放完成后，把从下载收纳箱落到桌面的文件标记为用户主动取出。
+/// 下载监听已独立绑定 Downloads；这里仅阻止桌面清扫规则立即移走用户主动取出的文件。
+pub fn exclude_download_dragout(g: &mut Global, source: &Path) {
+    let (Some(desktop), Some(name)) = (desktop_dir(), source.file_name()) else { return };
+    let path = desktop.join(name);
+    if !path.exists() {
+        return;
+    }
+    g.download_ignored.insert(path);
 }
 
 fn download_target(g: &Global) -> PathBuf {
@@ -1085,6 +1104,7 @@ fn main() {
         desktop_seen,
         download_rx,
         download_pending: HashMap::new(),
+        download_ignored: HashSet::new(),
         exiting: false,
         droptargets: Vec::new(),
         watchers: Vec::new(),

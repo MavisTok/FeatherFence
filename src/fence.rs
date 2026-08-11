@@ -912,10 +912,12 @@ unsafe extern "system" fn fence_wndproc(
             let x = low16(lparam.0 as usize);
             let y = high16(lparam.0 as usize);
             // 达到拖拽阈值后要启动的拖出(路径 + 目标目录),在 with_global 之外执行
-            let mut drag_path: Option<(String, PathBuf)> = None;
+            let mut drag_path: Option<(String, PathBuf, bool)> = None;
             with_global(|g| {
                 if let Some(idx) = fence_idx(g, hwnd) {
                     let ghost = g.config.ghost_mode;
+                    let is_download_fence =
+                        g.config.download_box_id == Some(g.fences[idx].cfg.id);
                     let mut need_render = false;
                     {
                         let f = &mut g.fences[idx];
@@ -1014,7 +1016,11 @@ unsafe extern "system" fn fence_wndproc(
                                     if let Some(p) = f.entries.get(didx).map(|e| e.path.clone()) {
                                         unsafe { ReleaseCapture(); }
                                         let vault = crate::config::vault_dir(&g.config);
-                                        drag_path = Some((p.to_string_lossy().to_string(), vault));
+                                        drag_path = Some((
+                                            p.to_string_lossy().to_string(),
+                                            vault,
+                                            is_download_fence,
+                                        ));
                                     }
                                 }
                                 need_render = true;
@@ -1035,9 +1041,12 @@ unsafe extern "system" fn fence_wndproc(
                 }
             });
             // 在锁外启动 OLE 拖出(阻塞到松手);拖出后文件可能被移动/删除 → 重扫目录刷新
-            if let Some((path, vault)) = drag_path {
-                crate::dragout::start_drag(vec![path]);
+            if let Some((path, vault, is_download_fence)) = drag_path {
+                let effect = crate::dragout::start_drag(vec![path.clone()]);
                 with_global(|g| {
+                    if is_download_fence && effect.0 != 0 {
+                        crate::exclude_download_dragout(g, &PathBuf::from(&path));
+                    }
                     if let Some(idx) = fence_idx(g, hwnd) {
                         let f = &mut g.fences[idx];
                         let keep_page = f.page;
