@@ -1,0 +1,80 @@
+name: Build and publish release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build Windows x64 and publish
+    runs-on: windows-latest
+
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release executable
+        run: cargo build --release --locked
+
+      - name: Package release files
+        id: package
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -LiteralPath "Cargo.toml" -Raw
+          $versionMatch = [regex]::Match($manifest, '(?m)^version\s*=\s*"([^"]+)"')
+          if (-not $versionMatch.Success) {
+            throw "Could not read the package version from Cargo.toml."
+          }
+
+          $version = $versionMatch.Groups[1].Value
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $tag = "v$version-build.$env:GITHUB_RUN_ID.$env:GITHUB_RUN_ATTEMPT"
+          $releaseName = "FeatherFence v$version ($shortSha)"
+          $packageDir = Join-Path $env:RUNNER_TEMP "FeatherFence-windows-x64"
+          $releaseExe = Join-Path $env:GITHUB_WORKSPACE "FeatherFence.exe"
+          $archive = Join-Path $env:GITHUB_WORKSPACE "FeatherFence-windows-x64.zip"
+          $checksumFile = Join-Path $env:GITHUB_WORKSPACE "FeatherFence-windows-x64.sha256"
+
+          New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+          Copy-Item -LiteralPath "target/release/feather-fences.exe" -Destination $releaseExe
+          Copy-Item -LiteralPath $releaseExe -Destination $packageDir
+          Copy-Item -LiteralPath "README.md", "LICENSE" -Destination $packageDir
+          Compress-Archive -Path "$packageDir/*" -DestinationPath $archive -CompressionLevel Optimal -Force
+
+          $exeChecksum = (Get-FileHash -LiteralPath $releaseExe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $archiveChecksum = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath $checksumFile -Value @(
+            "$exeChecksum *FeatherFence.exe"
+            "$archiveChecksum *FeatherFence-windows-x64.zip"
+          ) -Encoding ascii
+
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "release_name=$releaseName" >> $env:GITHUB_OUTPUT
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.package.outputs.tag }}
+          name: ${{ steps.package.outputs.release_name }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          make_latest: true
+          files: |
+            FeatherFence.exe
+            FeatherFence-windows-x64.zip
+            FeatherFence-windows-x64.sha256
