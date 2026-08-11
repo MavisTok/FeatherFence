@@ -5,6 +5,13 @@ on:
     branches:
       - main
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      target_sha:
+        description: Commit to build and publish
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -20,10 +27,13 @@ jobs:
 
     env:
       CARGO_TERM_COLOR: always
+      RELEASE_SHA: ${{ inputs.target_sha || github.sha }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_SHA }}
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -42,7 +52,7 @@ jobs:
           }
 
           $version = $versionMatch.Groups[1].Value
-          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $shortSha = $env:RELEASE_SHA.Substring(0, 7)
           $tag = "v$version-build.$env:GITHUB_RUN_ID.$env:GITHUB_RUN_ATTEMPT"
           $releaseName = "FeatherFence v$version ($shortSha)"
           $packageDir = Join-Path $env:RUNNER_TEMP "FeatherFence-windows-x64"
@@ -71,7 +81,7 @@ jobs:
         with:
           tag_name: ${{ steps.package.outputs.tag }}
           name: ${{ steps.package.outputs.release_name }}
-          target_commitish: ${{ github.sha }}
+          target_commitish: ${{ env.RELEASE_SHA }}
           generate_release_notes: true
           make_latest: true
           files: |

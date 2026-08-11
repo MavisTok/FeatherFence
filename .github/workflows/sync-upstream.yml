@@ -1,0 +1,82 @@
+name: Sync upstream and publish
+
+on:
+  schedule:
+    # 02:23, 08:23, 14:23 and 20:23 in Asia/Shanghai (UTC+8).
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream main
+    runs-on: windows-latest
+    outputs:
+      changed: ${{ steps.merge.outputs.changed }}
+      target_sha: ${{ steps.merge.outputs.target_sha }}
+
+    steps:
+      - name: Check out personal main branch
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge and push upstream changes
+        id: merge
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          $upstreamUrl = "https://github.com/BaldwinShu/FeatherFence.git"
+          git remote get-url upstream 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            git remote set-url upstream $upstreamUrl
+          } else {
+            git remote add upstream $upstreamUrl
+          }
+
+          git fetch --no-tags upstream main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to fetch upstream/main."
+          }
+
+          $before = (git rev-parse HEAD).Trim()
+          git merge --no-edit upstream/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Automatic merge failed. Resolve the conflict on main manually."
+          }
+
+          $after = (git rev-parse HEAD).Trim()
+          "target_sha=$after" >> $env:GITHUB_OUTPUT
+
+          if ($before -eq $after) {
+            "changed=false" >> $env:GITHUB_OUTPUT
+            Write-Host "Personal main already contains upstream/main."
+            exit 0
+          }
+
+          git push origin HEAD:main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to push the synchronized main branch."
+          }
+
+          "changed=true" >> $env:GITHUB_OUTPUT
+          Write-Host "Synchronized main to $after."
+
+  build-and-publish:
+    name: Build synchronized revision
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      target_sha: ${{ needs.sync.outputs.target_sha }}
